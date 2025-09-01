@@ -40,3 +40,9 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
