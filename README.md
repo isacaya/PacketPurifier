@@ -26,3 +26,7 @@
 ## How to Use
 
 Send the request packet to analyze to PacketPurifier via the context menu, then start Analyze Request. Check the results in the Results and Details panels below.
+
+## Notes
+
+- Elements that do not affect or are not reflected in the response cannot be identified. (It may not be helpful when testing for blind vulnerabilities.)
