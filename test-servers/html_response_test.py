@@ -86,6 +86,7 @@ def test_endpoint():
                 </li>
             </ul>
             <p><strong>Timestamp:</strong> {datetime.utcnow().isoformat()}Z</p>
+            <p><strong>Validation Token:</strong> {generate_validation_token()}</p>
         </body>
     </html>
     """

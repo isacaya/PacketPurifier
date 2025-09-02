@@ -51,7 +51,8 @@ def test_endpoint():
                 'cookie2': cookie2_value
             }
         },
-        'timestamp': datetime.utcnow().isoformat() + 'Z'
+        'timestamp': datetime.utcnow().isoformat() + 'Z',
+        "generate_validation_token": generate_validation_token()
     }
     
     response['message'] = 'Default response'
