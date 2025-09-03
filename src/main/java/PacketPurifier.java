@@ -579,7 +579,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         SwingUtilities.invokeLater(() -> {
             int progress = total > 0 ? (int) ((double) (total - remaining) / total * 100) : 100;
             progressBar.setValue(progress);
-            progressBar.setString(progress < 100 ? "Analyzing: " + progress + "%" : "Complete");
+            progressBar.setString(progress < 100 ? "Analyzing: " + progress + "%" : "Pending");
         });
     }
 
