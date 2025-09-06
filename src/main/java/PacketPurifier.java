@@ -18,8 +18,10 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -31,9 +33,12 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
     private DefaultTableModel tableModel;
     private JProgressBar progressBar;
     private JComboBox<String> filterComboBox;
+    private JRadioButton basicMethod;
+    private JRadioButton accurateMethod;
+    private JSpinner baselineSpinner;
     private JTextArea requestEditor;
     private HttpRequest currentRequest;
-    private HttpResponse originalResponse;
+    private List<HttpResponse> baselineResponses;
     private AtomicInteger tasksRemaining;
     private ExecutorService executor;
     private Color backgroundColor;
@@ -43,6 +48,20 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
     private JTextArea detailRequestArea;
     private JTextPane detailResponseArea;
     private JLabel notificationLabel;
+    private JButton analyzeButton;
+    private JButton clearButton;
+    private Map<Integer, PrefixPostfixPair> dynamicLinePrefixesPostfixes;
+    private Set<Integer> dynamicLines;
+
+    private static class PrefixPostfixPair {
+        String prefix;
+        String postfix;
+
+        PrefixPostfixPair(String prefix, String postfix) {
+            this.prefix = prefix;
+            this.postfix = postfix;
+        }
+    }
 
     private static class RequestResponsePair {
         HttpRequest request;
@@ -70,6 +89,9 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         this.executor = Executors.newFixedThreadPool(5);
         this.tasksRemaining = new AtomicInteger(0);
         this.requestResponseMap = new HashMap<>();
+        this.dynamicLinePrefixesPostfixes = new HashMap<>();
+        this.dynamicLines = new HashSet<>();
+        this.baselineResponses = new ArrayList<>();
 
         // Set theme colors based on Burp Suite's theme
         setThemeColors();
@@ -113,14 +135,37 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         filterComboBox.setBackground(backgroundColor);
         filterComboBox.setForeground(foregroundColor);
 
+        // Normalization radio buttons
+        JLabel normalizationLabel = new JLabel("Normalization:");
+        normalizationLabel.setForeground(foregroundColor);
+        normalizationLabel.setFont(new Font("Arial", Font.PLAIN, 12));
+        basicMethod = new JRadioButton("Basic", true);
+        basicMethod.setBackground(backgroundColor);
+        basicMethod.setForeground(foregroundColor);
+        accurateMethod = new JRadioButton("Accurate", false);
+        accurateMethod.setBackground(backgroundColor);
+        accurateMethod.setForeground(foregroundColor);
+        ButtonGroup normalizationGroup = new ButtonGroup();
+        normalizationGroup.add(basicMethod);
+        normalizationGroup.add(accurateMethod);
+
+        // Baseline request spinner
+        JLabel baselineLabel = new JLabel("Baseline Requests:");
+        baselineLabel.setForeground(foregroundColor);
+        baselineLabel.setFont(new Font("Arial", Font.PLAIN, 12));
+        SpinnerNumberModel spinnerModel = new SpinnerNumberModel(3, 2, 10, 1); // Default 3, min 2, max 10
+        baselineSpinner = new JSpinner(spinnerModel);
+        baselineSpinner.setFont(new Font("Arial", Font.PLAIN, 12));
+        baselineSpinner.setPreferredSize(new Dimension(50, 20));
+
         // Buttons
-        JButton analyzeButton = new JButton("Analyze Request");
+        analyzeButton = new JButton("Analyze Request");
         analyzeButton.setFont(new Font("Arial", Font.PLAIN, 12));
         analyzeButton.setBackground(buttonColor);
         analyzeButton.setForeground(Color.WHITE);
         analyzeButton.addActionListener(e -> analyzeRequestFromEditor());
 
-        JButton clearButton = new JButton("Clear");
+        clearButton = new JButton("Clear");
         clearButton.setFont(new Font("Arial", Font.PLAIN, 12));
         clearButton.setBackground(buttonColor);
         clearButton.setForeground(Color.WHITE);
@@ -131,7 +176,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         progressBar.setStringPainted(true);
         progressBar.setForeground(new Color(76, 175, 80));
         progressBar.setBackground(backgroundColor.equals(Color.WHITE) ? Color.LIGHT_GRAY : new Color(60, 64, 72));
-        progressBar.setPreferredSize(new Dimension(150, 20));
+        progressBar.setPreferredSize(new Dimension(250, 20));
 
         // Notification label
         notificationLabel = new JLabel("");
@@ -147,8 +192,15 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         toolbar.add(filterLabel);
         toolbar.add(filterComboBox);
         toolbar.add(Box.createHorizontalStrut(10));
+        toolbar.add(normalizationLabel);
+        toolbar.add(basicMethod);
+        toolbar.add(accurateMethod);
+        toolbar.add(Box.createHorizontalStrut(10));
+        toolbar.add(baselineLabel);
+        toolbar.add(baselineSpinner);
+        toolbar.add(Box.createHorizontalStrut(10));
         toolbar.add(progressBar);
-        toolbar.add(Box.createHorizontalGlue()); // Push notificationLabel to the right
+        toolbar.add(Box.createHorizontalGlue());
         toolbar.add(notificationLabel);
 
         // Request editor
@@ -162,7 +214,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         requestEditor.setBackground(backgroundColor.equals(Color.WHITE) ? new Color(245, 245, 245) : new Color(50, 54, 62));
         requestEditor.setForeground(foregroundColor);
         requestEditor.setBorder(BorderFactory.createEmptyBorder(2, 2, 2, 2));
-        requestEditor.setEditable(false); // Make read-only
+        requestEditor.setEditable(false);
 
         // Add line numbers
         JTextArea lineNumbers = new JTextArea("1");
@@ -293,15 +345,15 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
             if (currentRequest != null) {
                 service = currentRequest.httpService();
             } else {
-                // Attempt to infer HttpService from Host header
                 String host = extractHostFromRequest(editedRequest);
                 if (host != null) {
-                    service = HttpService.httpService(host, 443, true); // Assume HTTPS
+                    service = HttpService.httpService(host, 443, true);
                 } else {
                     throw new IllegalArgumentException("No Host header found in request.");
                 }
             }
             HttpRequest modifiedRequest = HttpRequest.httpRequest(service, editedRequest);
+            clearResults(); // Clear results before analyzing
             analyzeRequest(modifiedRequest);
         } catch (Exception e) {
             api.logging().logToError("Error parsing edited request: " + e.getMessage());
@@ -327,9 +379,13 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         progressBar.setString("Ready");
         detailRequestArea.setText("");
         detailResponseArea.setText("");
-        originalResponse = null;
+        baselineResponses.clear();
+        dynamicLinePrefixesPostfixes.clear();
+        dynamicLines.clear();
         requestResponseMap.clear();
         notificationLabel.setText("");
+        analyzeButton.setEnabled(true);
+        clearButton.setEnabled(true);
     }
 
     @Override
@@ -354,13 +410,22 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
             progressBar.setString("Ready");
             detailRequestArea.setText("");
             detailResponseArea.setText("");
-            originalResponse = null;
+            baselineResponses.clear();
+            dynamicLinePrefixesPostfixes.clear();
+            dynamicLines.clear();
             requestResponseMap.clear();
             notificationLabel.setText("");
+            analyzeButton.setEnabled(true);
+            clearButton.setEnabled(true);
         });
     }
 
     private void analyzeRequest(HttpRequest originalRequest) {
+        SwingUtilities.invokeLater(() -> {
+            analyzeButton.setEnabled(false);
+            clearButton.setEnabled(false);
+        });
+
         executor.submit(() -> {
             try {
                 List<InfluentialElement> influentialElements = new ArrayList<>();
@@ -380,15 +445,81 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
                         .count();
                 }
                 tasksRemaining.set(totalTasks);
+
+                // Get number of baseline requests from spinner
+                int numBaselineRequests = (Integer) baselineSpinner.getValue();
+                baselineResponses.clear();
+                List<String[]> responseLines = new ArrayList<>();
+
+                // Send baseline requests dynamically
+                for (int i = 0; i < numBaselineRequests; i++) {
+                    final int requestIndex = i + 1;
+                    SwingUtilities.invokeLater(() -> progressBar.setString(String.format("Sending Baseline Request %d/%d", requestIndex, numBaselineRequests)));
+                    HttpResponse response = api.http().sendRequest(originalRequest).response();
+                    baselineResponses.add(response);
+                    responseLines.add(response.toString().split("\n"));
+                    Thread.sleep(1500);
+                }
+
+                // Reset progress bar for element analysis
                 updateProgress(0, totalTasks);
 
-                originalResponse = api.http().sendRequest(originalRequest).response();
+                // Identify dynamic lines
+                dynamicLinePrefixesPostfixes.clear();
+                dynamicLines.clear();
+                int minLines = responseLines.stream().mapToInt(lines -> lines.length).min().orElse(0);
+                for (int i = 0; i < minLines; i++) {
+                    boolean allEqual = true;
+                    String firstLine = responseLines.get(0)[i];
+                    for (int j = 1; j < responseLines.size(); j++) {
+                        if (!firstLine.equals(responseLines.get(j)[i])) {
+                            allEqual = false;
+                            break;
+                        }
+                    }
+                    if (!allEqual) {
+                        if (accurateMethod.isSelected()) {
+                            PrefixPostfixPair pair = extractCommonAndVariable(responseLines, i);
+                            dynamicLinePrefixesPostfixes.put(i, pair);
+                        } else {
+                            dynamicLines.add(i);
+                        }
+                    }
+                }
+
+                // Log normalized lines for the first baseline response
+                String[] normalizedLines = baselineResponses.get(0).toString().split("\n");
+                if (accurateMethod.isSelected()) {
+                    for (Map.Entry<Integer, PrefixPostfixPair> entry : dynamicLinePrefixesPostfixes.entrySet()) {
+                        int lineIndex = entry.getKey();
+                        PrefixPostfixPair pair = entry.getValue();
+                        if (lineIndex < normalizedLines.length) {
+                            String originalLine = normalizedLines[lineIndex];
+                            String normalizedLine = normalizeLine(originalLine, pair);
+                            api.logging().logToOutput(String.format(
+                                "Dynamic Line %d: Original='%s', Prefix='%s', Postfix='%s', Normalized='%s'",
+                                lineIndex + 1, originalLine, pair.prefix, pair.postfix, normalizedLine
+                            ));
+                        }
+                    }
+                } else {
+                    for (Integer lineIndex : dynamicLines) {
+                        if (lineIndex < normalizedLines.length) {
+                            String originalLine = normalizedLines[lineIndex];
+                            String normalizedLine = "<__DYNAMIC_CONTENTS__>";
+                            api.logging().logToOutput(String.format(
+                                "Dynamic Line %d: Original='%s', Normalized='%s'",
+                                lineIndex + 1, originalLine, normalizedLine
+                            ));
+                        }
+                    }
+                }
 
                 if (filter.equals("All") || filter.equals("Parameters")) {
                     for (HttpParameter param : originalRequest.parameters()) {
                         if (param.type() != HttpParameterType.COOKIE) {
                             HttpRequest modifiedRequest = originalRequest.withRemovedParameters(param);
-                            boolean hasImpact = testElementRemoval(originalRequest, modifiedRequest, originalResponse, "Parameter", param.name(), totalTasks);
+                            boolean hasImpact = testElementRemoval(originalRequest, modifiedRequest, baselineResponses.get(0), "Parameter", param.name(), totalTasks);
                             if (hasImpact) {
                                 influentialElements.add(new InfluentialElement("Parameter", param.name()));
                             }
@@ -399,7 +530,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
                 if (filter.equals("All") || filter.equals("Cookies")) {
                     for (HttpParameter cookie : originalRequest.parameters(HttpParameterType.COOKIE)) {
                         HttpRequest modifiedRequest = originalRequest.withRemovedParameters(cookie);
-                        boolean hasImpact = testElementRemoval(originalRequest, modifiedRequest, originalResponse, "Cookie", cookie.name(), totalTasks);
+                        boolean hasImpact = testElementRemoval(originalRequest, modifiedRequest, baselineResponses.get(0), "Cookie", cookie.name(), totalTasks);
                         if (hasImpact) {
                             influentialElements.add(new InfluentialElement("Cookie", cookie.name()));
                         }
@@ -410,7 +541,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
                     for (HttpHeader header : originalRequest.headers()) {
                         if (!header.name().equalsIgnoreCase("Host")) {
                             HttpRequest modifiedRequest = originalRequest.withRemovedHeader(header.name());
-                            boolean hasImpact = testElementRemoval(originalRequest, modifiedRequest, originalResponse, "Header", header.name(), totalTasks);
+                            boolean hasImpact = testElementRemoval(originalRequest, modifiedRequest, baselineResponses.get(0), "Header", header.name(), totalTasks);
                             if (hasImpact) {
                                 influentialElements.add(new InfluentialElement("Header", header.name()));
                             }
@@ -422,16 +553,18 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
                 HttpRequest minimizedRequest = createMinimizedRequest(originalRequest, influentialElements);
                 api.repeater().sendToRepeater(minimizedRequest);
 
-                // Notify user
-                final int finalTotalTasks = totalTasks; // Make effectively final
+                // Notify user and re-enable buttons
+                final int finalTotalTasks = totalTasks;
                 SwingUtilities.invokeLater(() -> {
                     updateProgress(finalTotalTasks, finalTotalTasks);
                     notificationLabel.setText("Analysis complete. Minimized packet sent to Repeater.");
                     new Timer(2000, e -> notificationLabel.setText("")).start();
+                    analyzeButton.setEnabled(true);
+                    clearButton.setEnabled(true);
                 });
             } catch (Exception e) {
                 api.logging().logToError("Error analyzing request: " + e.getMessage());
-                final int finalTotalTasks = tasksRemaining.get(); // Make effectively final for error case
+                final int finalTotalTasks = tasksRemaining.get();
                 SwingUtilities.invokeLater(() -> {
                     tableModel.addRow(new Object[]{
                         originalRequest.url(), "Error", "N/A"
@@ -439,6 +572,8 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
                     updateProgress(finalTotalTasks, finalTotalTasks);
                     notificationLabel.setText("Error during analysis.");
                     new Timer(2000, e1 -> notificationLabel.setText("")).start();
+                    analyzeButton.setEnabled(true);
+                    clearButton.setEnabled(true);
                 });
             }
         });
@@ -476,7 +611,6 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
     private HttpRequest createMinimizedRequest(HttpRequest originalRequest, List<InfluentialElement> influentialElements) {
         HttpRequest minimizedRequest = originalRequest;
 
-        // Collect all elements to keep
         List<String> keepParameters = new ArrayList<>();
         List<String> keepCookies = new ArrayList<>();
         List<String> keepHeaders = new ArrayList<>();
@@ -491,21 +625,18 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
             }
         }
 
-        // Remove non-influential parameters
         for (HttpParameter param : originalRequest.parameters()) {
             if (param.type() != HttpParameterType.COOKIE && !keepParameters.contains(param.name())) {
                 minimizedRequest = minimizedRequest.withRemovedParameters(param);
             }
         }
 
-        // Remove non-influential cookies
         for (HttpParameter cookie : originalRequest.parameters(HttpParameterType.COOKIE)) {
             if (!keepCookies.contains(cookie.name())) {
                 minimizedRequest = minimizedRequest.withRemovedParameters(cookie);
             }
         }
 
-        // Remove non-influential headers (except Host)
         for (HttpHeader header : originalRequest.headers()) {
             if (!header.name().equalsIgnoreCase("Host") && !keepHeaders.contains(header.name())) {
                 minimizedRequest = minimizedRequest.withRemovedHeader(header.name());
@@ -517,13 +648,13 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
 
     private void displayResponseWithHighlights(HttpResponse modifiedResponse) {
         detailResponseArea.setText("");
-        if (modifiedResponse == null || originalResponse == null) {
+        if (modifiedResponse == null || baselineResponses.isEmpty()) {
             detailResponseArea.setText(modifiedResponse == null ? "No response available" : modifiedResponse.toString());
             return;
         }
 
-        String[] originalLines = originalResponse.toString().split("\n");
-        String[] modifiedLines = modifiedResponse.toString().split("\n");
+        String[] originalLines = normalizeResponse(baselineResponses.get(0).toString()).split("\n");
+        String[] modifiedLines = normalizeResponse(modifiedResponse.toString()).split("\n");
         StyledDocument doc = detailResponseArea.getStyledDocument();
         Style defaultStyle = doc.addStyle("default", null);
         StyleConstants.setFontFamily(defaultStyle, "Monospaced");
@@ -531,7 +662,10 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         StyleConstants.setForeground(defaultStyle, foregroundColor);
 
         Style highlightStyle = doc.addStyle("highlight", defaultStyle);
-        StyleConstants.setBackground(highlightStyle, buttonColor); // Use button color for highlight
+        StyleConstants.setBackground(highlightStyle, buttonColor);
+
+        Style dynamicStyle = doc.addStyle("dynamic", defaultStyle);
+        StyleConstants.setBackground(dynamicStyle, new Color(128, 0, 64)); // Dark magenta for dynamic content
 
         try {
             int maxLines = Math.max(originalLines.length, modifiedLines.length);
@@ -539,7 +673,9 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
                 String originalLine = i < originalLines.length ? originalLines[i] : "";
                 String modifiedLine = i < modifiedLines.length ? modifiedLines[i] : "";
                 String lineToDisplay = modifiedLine + "\n";
-                if (!originalLine.equals(modifiedLine)) {
+                if (lineToDisplay.contains("<__DYNAMIC_CONTENTS__>")) {
+                    doc.insertString(doc.getLength(), lineToDisplay, dynamicStyle);
+                } else if (!originalLine.equals(modifiedLine)) {
                     doc.insertString(doc.getLength(), lineToDisplay, highlightStyle);
                 } else {
                     doc.insertString(doc.getLength(), lineToDisplay, defaultStyle);
@@ -561,8 +697,74 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
     }
 
     private boolean hasSignificantImpact(HttpResponse original, HttpResponse modified) {
-        boolean statusDiff = original.statusCode() != modified.statusCode();
-        boolean lengthDiff = original.body().length() != modified.body().length();
-        return statusDiff || lengthDiff;
+        if (original.statusCode() != modified.statusCode()) {
+            return true;
+        }
+
+        String normalizedOriginal = normalizeResponse(original.toString());
+        String normalizedModified = normalizeResponse(modified.toString());
+        return !normalizedOriginal.equals(normalizedModified);
+    }
+
+    private String normalizeLine(String line, PrefixPostfixPair pair) {
+        if (pair != null && line.startsWith(pair.prefix) && line.endsWith(pair.postfix)) {
+            int start = pair.prefix.length();
+            int end = line.length() - pair.postfix.length();
+            if (start <= end) {
+                return pair.prefix + "<__DYNAMIC_CONTENTS__>" + pair.postfix;
+            }
+        }
+        return line;
+    }
+
+    private String normalizeResponse(String responseStr) {
+        String[] lines = responseStr.split("\n");
+        if (accurateMethod.isSelected()) {
+            for (Map.Entry<Integer, PrefixPostfixPair> entry : dynamicLinePrefixesPostfixes.entrySet()) {
+                int lineIndex = entry.getKey();
+                if (lineIndex < lines.length) {
+                    lines[lineIndex] = normalizeLine(lines[lineIndex], entry.getValue());
+                }
+            }
+        } else {
+            for (Integer lineIndex : dynamicLines) {
+                if (lineIndex < lines.length) {
+                    lines[lineIndex] = "<__DYNAMIC_CONTENTS__>";
+                }
+            }
+        }
+        return String.join("\n", lines);
+    }
+
+    private PrefixPostfixPair extractCommonAndVariable(List<String[]> responseLines, int lineIndex) {
+        String firstLine = responseLines.get(0)[lineIndex];
+        int prefixLen = firstLine.length();
+        int postfixLen = firstLine.length();
+
+        // Find common prefix
+        for (String[] lines : responseLines) {
+            String line = lines[lineIndex];
+            int commonPrefix = 0;
+            while (commonPrefix < Math.min(firstLine.length(), line.length()) &&
+                   firstLine.charAt(commonPrefix) == line.charAt(commonPrefix)) {
+                commonPrefix++;
+            }
+            prefixLen = Math.min(prefixLen, commonPrefix);
+        }
+
+        // Find common postfix
+        for (String[] lines : responseLines) {
+            String line = lines[lineIndex];
+            int commonPostfix = 0;
+            while (commonPostfix < Math.min(firstLine.length() - prefixLen, line.length() - prefixLen) &&
+                   firstLine.charAt(firstLine.length() - 1 - commonPostfix) == line.charAt(line.length() - 1 - commonPostfix)) {
+                commonPostfix++;
+            }
+            postfixLen = Math.min(postfixLen, commonPostfix);
+        }
+
+        String prefix = firstLine.substring(0, prefixLen);
+        String postfix = firstLine.substring(firstLine.length() - postfixLen);
+        return new PrefixPostfixPair(prefix, postfix);
     }
 }
