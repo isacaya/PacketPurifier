@@ -6,17 +6,18 @@
 
 ## How It Works
 
-PacketPurifier sends the request multiple times (adjustable) to establish a baseline. It then removes each element one by one, observing changes in the response compared to the baseline. Elements causing differences are considered influential. Two normalization methods are available for baseline establishment:
-
-- **Basic** (default): When establishing the baseline, it removes entire lines in the response that display changes.
-- **Accurate**: When establishing the baseline, it precisely identifies and removes only the variable parts of the response. (This is significantly influenced by the number of baseline requests; more requests lead to greater precision.)
+PacketPurifier sends the request multiple times to establish a baseline. It then removes each element one by one, observing changes in the response compared to the baseline. Elements causing differences are considered influential. 
 
 Analysis results are displayed in the Results panel, and a streamlined request containing only influential elements is sent to Repeater.
 
 ## Features
 
-- **Highlighting the differences**: Highlight the lines where differences occur in the response. (Normalized parts during baseline establishment are highlighted in dark magenta, and the parts influenced by influential elements are shown in light blue.)
-- **Element Filtering**: It can choose which elements to include in the analysis.
+- **Highlighting the Differences**: Highlight the lines where differences occur in the response. (Normalized parts during baseline establishment are highlighted in dark magenta, and the parts influenced by influential elements are shown in light blue.)
+- **Element Filtering**: It can choose which elements(Parameters, Cookies, Headers) to include in the analysis.
+- **Adjustable Number of Baselines**: The number of baselines can be adjusted to improve accuracy. (2 to 10)
+- **Various Baseline Establishment Criteria**: Removes values that change with every request regardless of user input (e.g., timestamps, CSRF tokens) while establishing the baseline. Two normalization methods are used to detect such changing values:
+   - **Basic** (default): When establishing the baseline, it removes entire lines in the response that display changes.
+   - **Accurate**: When establishing the baseline, it precisely identifies and removes only the variable parts of the response. (This is significantly influenced by the number of baseline requests; more requests lead to greater precision.)
 
 ## Installation
 
