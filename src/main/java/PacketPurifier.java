@@ -1,4 +1,5 @@
 import burp.api.montoya.BurpExtension;
+import burp.api.montoya.extension.ExtensionUnloadingHandler;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.params.HttpParameter;
@@ -6,8 +7,10 @@ import burp.api.montoya.http.message.params.HttpParameterType;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.http.HttpService;
-import burp.api.montoya.ui.Theme;
-import burp.api.montoya.ui.UserInterface;
+import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.ui.editor.EditorOptions;
+import burp.api.montoya.ui.editor.HttpRequestEditor;
+import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import javax.swing.*;
@@ -28,7 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
+public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, ExtensionUnloadingHandler {
     private MontoyaApi api;
     private DefaultTableModel tableModel;
     private JProgressBar progressBar;
@@ -36,17 +39,14 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
     private JRadioButton basicMethod;
     private JRadioButton accurateMethod;
     private JSpinner baselineSpinner;
-    private JTextArea requestEditor;
+    private HttpRequestEditor requestEditor;
     private HttpRequest currentRequest;
     private List<HttpResponse> baselineResponses;
     private AtomicInteger tasksRemaining;
     private ExecutorService executor;
-    private Color backgroundColor;
-    private Color foregroundColor;
-    private Color buttonColor;
-    private Map<Integer, RequestResponsePair> requestResponseMap;
-    private JTextArea detailRequestArea;
-    private JTextPane detailResponseArea;
+    private Map<Integer, HttpRequestResponse> requestResponseMap;
+    private HttpRequestEditor detailRequestEditor;
+    private HttpResponseEditor detailResponseEditor;
     private JLabel notificationLabel;
     private JButton analyzeButton;
     private JButton clearButton;
@@ -63,15 +63,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         }
     }
 
-    private static class RequestResponsePair {
-        HttpRequest request;
-        HttpResponse response;
 
-        RequestResponsePair(HttpRequest request, HttpResponse response) {
-            this.request = request;
-            this.response = response;
-        }
-    }
 
     private static class InfluentialElement {
         String type;
@@ -93,96 +85,64 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         this.dynamicLines = new HashSet<>();
         this.baselineResponses = new ArrayList<>();
 
-        // Set theme colors based on Burp Suite's theme
-        setThemeColors();
-
         api.extension().setName("PacketPurifier");
         api.userInterface().registerContextMenuItemsProvider(this);
         createUITab();
 
         api.logging().logToOutput("PacketPurifier initialized.");
+        api.extension().registerUnloadingHandler(this);
     }
 
-    private void setThemeColors() {
-        Theme theme = api.userInterface().currentTheme();
-        if (theme == Theme.DARK) {
-            backgroundColor = new Color(40, 44, 52); // Dark theme background
-            foregroundColor = Color.WHITE;
-            buttonColor = new Color(63, 81, 181); // Blue for buttons (dark)
-        } else {
-            backgroundColor = Color.WHITE; // Light theme background
-            foregroundColor = Color.BLACK;
-            buttonColor = new Color(33, 150, 243); // Blue for buttons (light)
+    @Override
+    public void extensionUnloaded() {
+        if (executor != null && !executor.isShutdown()) {
+            executor.shutdown();
+            api.logging().logToOutput("PacketPurifier executor shutdown complete.");
         }
     }
+
+
 
     private void createUITab() {
         JPanel mainPanel = new JPanel(new BorderLayout(5, 5));
         mainPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
-        mainPanel.setBackground(backgroundColor);
 
         // Toolbar
         JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        toolbar.setBackground(backgroundColor);
 
         // Filter dropdown
         JLabel filterLabel = new JLabel("Analyze:");
-        filterLabel.setForeground(foregroundColor);
-        filterLabel.setFont(new Font("Arial", Font.PLAIN, 12));
         String[] filterOptions = {"All", "Parameters", "Cookies", "Headers"};
         filterComboBox = new JComboBox<>(filterOptions);
-        filterComboBox.setFont(new Font("Arial", Font.PLAIN, 12));
-        filterComboBox.setBackground(backgroundColor);
-        filterComboBox.setForeground(foregroundColor);
 
         // Normalization radio buttons
         JLabel normalizationLabel = new JLabel("Normalization:");
-        normalizationLabel.setForeground(foregroundColor);
-        normalizationLabel.setFont(new Font("Arial", Font.PLAIN, 12));
         basicMethod = new JRadioButton("Basic", true);
-        basicMethod.setBackground(backgroundColor);
-        basicMethod.setForeground(foregroundColor);
         accurateMethod = new JRadioButton("Accurate", false);
-        accurateMethod.setBackground(backgroundColor);
-        accurateMethod.setForeground(foregroundColor);
         ButtonGroup normalizationGroup = new ButtonGroup();
         normalizationGroup.add(basicMethod);
         normalizationGroup.add(accurateMethod);
 
         // Baseline request spinner
         JLabel baselineLabel = new JLabel("Baseline Requests:");
-        baselineLabel.setForeground(foregroundColor);
-        baselineLabel.setFont(new Font("Arial", Font.PLAIN, 12));
         SpinnerNumberModel spinnerModel = new SpinnerNumberModel(3, 2, 10, 1); // Default 3, min 2, max 10
         baselineSpinner = new JSpinner(spinnerModel);
-        baselineSpinner.setFont(new Font("Arial", Font.PLAIN, 12));
         baselineSpinner.setPreferredSize(new Dimension(50, 20));
 
         // Buttons
         analyzeButton = new JButton("Analyze Request");
-        analyzeButton.setFont(new Font("Arial", Font.PLAIN, 12));
-        analyzeButton.setBackground(buttonColor);
-        analyzeButton.setForeground(Color.WHITE);
         analyzeButton.addActionListener(e -> analyzeRequestFromEditor());
 
         clearButton = new JButton("Clear");
-        clearButton.setFont(new Font("Arial", Font.PLAIN, 12));
-        clearButton.setBackground(buttonColor);
-        clearButton.setForeground(Color.WHITE);
         clearButton.addActionListener(e -> clearResults());
 
         // Progress bar
         progressBar = new JProgressBar(0, 100);
         progressBar.setStringPainted(true);
-        progressBar.setForeground(new Color(76, 175, 80));
-        progressBar.setBackground(backgroundColor.equals(Color.WHITE) ? Color.LIGHT_GRAY : new Color(60, 64, 72));
         progressBar.setPreferredSize(new Dimension(250, 20));
 
         // Notification label
         notificationLabel = new JLabel("");
-        notificationLabel.setFont(new Font("Arial", Font.PLAIN, 12));
-        notificationLabel.setForeground(foregroundColor);
-        notificationLabel.setBackground(backgroundColor);
         notificationLabel.setHorizontalAlignment(SwingConstants.RIGHT);
 
         // Add components to toolbar
@@ -205,47 +165,15 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
 
         // Request editor
         JPanel requestPanel = new JPanel(new BorderLayout());
-        requestPanel.setBackground(backgroundColor);
-        requestPanel.setBorder(BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(Color.GRAY), "Request", 0, 0, new Font("Arial", Font.BOLD, 12), foregroundColor));
+        requestPanel.setBorder(BorderFactory.createTitledBorder("Request"));
 
-        requestEditor = new JTextArea(10, 20);
-        requestEditor.setFont(new Font("Monospaced", Font.PLAIN, 12));
-        requestEditor.setBackground(backgroundColor.equals(Color.WHITE) ? new Color(245, 245, 245) : new Color(50, 54, 62));
-        requestEditor.setForeground(foregroundColor);
-        requestEditor.setBorder(BorderFactory.createEmptyBorder(2, 2, 2, 2));
-        requestEditor.setEditable(false);
-
-        // Add line numbers
-        JTextArea lineNumbers = new JTextArea("1");
-        lineNumbers.setBackground(backgroundColor.equals(Color.WHITE) ? new Color(230, 230, 230) : new Color(45, 49, 57));
-        lineNumbers.setForeground(foregroundColor);
-        lineNumbers.setFont(new Font("Monospaced", Font.PLAIN, 12));
-        lineNumbers.setEditable(false);
-        lineNumbers.setBorder(BorderFactory.createEmptyBorder(2, 5, 2, 5));
-        requestEditor.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
-            public void insertUpdate(javax.swing.event.DocumentEvent e) { updateLineNumbers(); }
-            public void removeUpdate(javax.swing.event.DocumentEvent e) { updateLineNumbers(); }
-            public void changedUpdate(javax.swing.event.DocumentEvent e) { updateLineNumbers(); }
-            private void updateLineNumbers() {
-                int lineCount = requestEditor.getLineCount();
-                StringBuilder numbers = new StringBuilder();
-                for (int i = 1; i <= lineCount; i++) {
-                    numbers.append(i).append("\n");
-                }
-                lineNumbers.setText(numbers.toString());
-            }
-        });
-
-        JScrollPane requestScroll = new JScrollPane(requestEditor);
-        requestScroll.setRowHeaderView(lineNumbers);
-        requestPanel.add(requestScroll, BorderLayout.CENTER);
+        requestEditor = api.userInterface().createHttpRequestEditor();
+        // Don't set initial request - let it stay empty until user loads one
+        requestPanel.add(requestEditor.uiComponent(), BorderLayout.CENTER);
 
         // Results panel
         JPanel resultsPanel = new JPanel(new BorderLayout());
-        resultsPanel.setBackground(backgroundColor);
-        resultsPanel.setBorder(BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(Color.GRAY), "Results", 0, 0, new Font("Arial", Font.BOLD, 12), foregroundColor));
+        resultsPanel.setBorder(BorderFactory.createTitledBorder("Results"));
 
         String[] columns = {"URL", "Element Type", "Element Name"};
         tableModel = new DefaultTableModel(columns, 0) {
@@ -256,11 +184,6 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         };
         JTable resultTable = new JTable(tableModel);
         resultTable.setFillsViewportHeight(true);
-        resultTable.setFont(new Font("Arial", Font.PLAIN, 12));
-        resultTable.getTableHeader().setFont(new Font("Arial", Font.BOLD, 12));
-        resultTable.setBackground(backgroundColor.equals(Color.WHITE) ? Color.WHITE : new Color(50, 54, 62));
-        resultTable.setForeground(foregroundColor);
-        resultTable.setGridColor(Color.GRAY);
         resultTable.setRowHeight(25);
 
         // Add mouse listener for row clicks
@@ -269,14 +192,13 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
             public void mouseClicked(MouseEvent e) {
                 int row = resultTable.getSelectedRow();
                 if (row >= 0) {
-                    RequestResponsePair pair = requestResponseMap.get(row);
+                    HttpRequestResponse pair = requestResponseMap.get(row);
                     if (pair != null) {
-                        detailRequestArea.setText(pair.request.toString());
-                        displayResponseWithHighlights(pair.response);
-                        detailRequestArea.setCaretPosition(0);
+                        detailRequestEditor.setRequest(pair.request());
+                        detailResponseEditor.setResponse(pair.response());
                     } else {
-                        detailRequestArea.setText("");
-                        detailResponseArea.setText("");
+                        detailRequestEditor.setRequest(null);
+                        detailResponseEditor.setResponse(null);
                     }
                 }
             }
@@ -288,42 +210,27 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
 
         // Details panel for request/response
         JPanel detailsPanel = new JPanel(new BorderLayout());
-        detailsPanel.setBackground(backgroundColor);
-        detailsPanel.setBorder(BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(Color.GRAY), "Details", 0, 0, new Font("Arial", Font.BOLD, 12), foregroundColor));
+        detailsPanel.setBorder(BorderFactory.createTitledBorder("Details"));
 
-        detailRequestArea = new JTextArea(5, 20);
-        detailRequestArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
-        detailRequestArea.setBackground(backgroundColor.equals(Color.WHITE) ? new Color(245, 245, 245) : new Color(50, 54, 62));
-        detailRequestArea.setForeground(foregroundColor);
-        detailRequestArea.setEditable(false);
-        JScrollPane detailRequestScroll = new JScrollPane(detailRequestArea);
-        detailRequestScroll.setBorder(BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(Color.GRAY), "Sent Request", 0, 0, new Font("Arial", Font.PLAIN, 12), foregroundColor));
+        detailRequestEditor = api.userInterface().createHttpRequestEditor();
+        JScrollPane detailRequestScroll = new JScrollPane(detailRequestEditor.uiComponent());
+        detailRequestScroll.setBorder(BorderFactory.createTitledBorder("Sent Request"));
 
-        detailResponseArea = new JTextPane();
-        detailResponseArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
-        detailResponseArea.setBackground(backgroundColor.equals(Color.WHITE) ? new Color(245, 245, 245) : new Color(50, 54, 62));
-        detailResponseArea.setForeground(foregroundColor);
-        detailResponseArea.setEditable(false);
-        JScrollPane detailResponseScroll = new JScrollPane(detailResponseArea);
-        detailResponseScroll.setBorder(BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(Color.GRAY), "Received Response", 0, 0, new Font("Arial", Font.PLAIN, 12), foregroundColor));
+        detailResponseEditor = api.userInterface().createHttpResponseEditor();
+        JScrollPane detailResponseScroll = new JScrollPane(detailResponseEditor.uiComponent());
+        detailResponseScroll.setBorder(BorderFactory.createTitledBorder("Received Response"));
 
         JSplitPane detailsSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, detailRequestScroll, detailResponseScroll);
         detailsSplit.setDividerLocation(300);
-        detailsSplit.setBackground(backgroundColor);
         detailsPanel.add(detailsSplit, BorderLayout.CENTER);
 
         // Combine results and details in a vertical split
         JSplitPane resultsAndDetailsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, resultsPanel, detailsPanel);
         resultsAndDetailsSplit.setDividerLocation(200);
-        resultsAndDetailsSplit.setBackground(backgroundColor);
 
         // Main vertical split
         JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, requestPanel, resultsAndDetailsSplit);
         mainSplit.setDividerLocation(200);
-        mainSplit.setBackground(backgroundColor);
 
         mainPanel.add(toolbar, BorderLayout.NORTH);
         mainPanel.add(mainSplit, BorderLayout.CENTER);
@@ -332,53 +239,52 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
     }
 
     private void analyzeRequestFromEditor() {
-        if (requestEditor.getText().isEmpty()) {
-            SwingUtilities.invokeLater(() -> {
-                notificationLabel.setText("No request loaded. Please select a request.");
-                new Timer(2000, e -> notificationLabel.setText("")).start();
-            });
-            return;
-        }
         try {
-            String editedRequest = requestEditor.getText();
-            HttpService service = null;
-            if (currentRequest != null) {
-                service = currentRequest.httpService();
-            } else {
-                String host = extractHostFromRequest(editedRequest);
-                if (host != null) {
-                    service = HttpService.httpService(host, 443, true);
-                } else {
-                    throw new IllegalArgumentException("No Host header found in request.");
-                }
+            HttpRequest modifiedRequest = requestEditor.getRequest();
+            
+            // Check if there's actually a request loaded
+            if (modifiedRequest == null) {
+                SwingUtilities.invokeLater(() -> {
+                    notificationLabel.setText("No request loaded. Please right-click a request and select 'Send to PacketPurifier'.");
+                    new Timer(3000, e -> notificationLabel.setText("")).start();
+                });
+                return;
             }
-            HttpRequest modifiedRequest = HttpRequest.httpRequest(service, editedRequest);
+            
+            // Verify the request has valid content
+            if (modifiedRequest.url() == null || modifiedRequest.httpService() == null) {
+                SwingUtilities.invokeLater(() -> {
+                    notificationLabel.setText("Invalid request: no service found.");
+                    new Timer(2000, e -> notificationLabel.setText("")).start();
+                });
+                return;
+            }
+            
+            // Log request details for debugging
+            api.logging().logToOutput("Request loaded successfully: " + modifiedRequest.url());
+            api.logging().logToOutput("Request method: " + modifiedRequest.method());
+            api.logging().logToOutput("Request service: " + modifiedRequest.httpService());
+            
             clearResults(); // Clear results before analyzing
             analyzeRequest(modifiedRequest);
         } catch (Exception e) {
             api.logging().logToError("Error parsing edited request: " + e.getMessage());
+            e.printStackTrace();
             SwingUtilities.invokeLater(() -> {
-                notificationLabel.setText("Invalid request format.");
-                new Timer(2000, e1 -> notificationLabel.setText("")).start();
+                notificationLabel.setText("Error: " + e.getMessage());
+                new Timer(3000, e1 -> notificationLabel.setText("")).start();
             });
         }
     }
 
-    private String extractHostFromRequest(String rawRequest) {
-        Pattern hostPattern = Pattern.compile("Host: ([^\r\n]+)", Pattern.CASE_INSENSITIVE);
-        Matcher matcher = hostPattern.matcher(rawRequest);
-        if (matcher.find()) {
-            return matcher.group(1).trim();
-        }
-        return null;
-    }
+
 
     private void clearResults() {
         tableModel.setRowCount(0);
         progressBar.setValue(0);
         progressBar.setString("Ready");
-        detailRequestArea.setText("");
-        detailResponseArea.setText("");
+        detailRequestEditor.setRequest(null);
+        detailResponseEditor.setResponse(null);
         baselineResponses.clear();
         dynamicLinePrefixesPostfixes.clear();
         dynamicLines.clear();
@@ -393,7 +299,6 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         List<Component> menuItems = new ArrayList<>();
         if (event.messageEditorRequestResponse().isPresent()) {
             JMenuItem analyzeItem = new JMenuItem("Send to PacketPurifier");
-            analyzeItem.setFont(new Font("Arial", Font.PLAIN, 12));
             analyzeItem.addActionListener(e -> loadRequest(event.messageEditorRequestResponse().get().requestResponse().request()));
             menuItems.add(analyzeItem);
         }
@@ -402,14 +307,20 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
 
     private void loadRequest(HttpRequest request) {
         currentRequest = request;
+        api.logging().logToOutput("Loading request: " + request.url());
         SwingUtilities.invokeLater(() -> {
-            requestEditor.setText(request.toString());
-            requestEditor.setCaretPosition(0);
+            try {
+                requestEditor.setRequest(request);
+                api.logging().logToOutput("Request set in editor successfully");
+            } catch (Exception e) {
+                api.logging().logToError("Error setting request in editor: " + e.getMessage());
+                e.printStackTrace();
+            }
             tableModel.setRowCount(0);
             progressBar.setValue(0);
             progressBar.setString("Ready");
-            detailRequestArea.setText("");
-            detailResponseArea.setText("");
+            detailRequestEditor.setRequest(null);
+            detailResponseEditor.setResponse(null);
             baselineResponses.clear();
             dynamicLinePrefixesPostfixes.clear();
             dynamicLines.clear();
@@ -590,7 +501,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
                     tableModel.addRow(new Object[]{
                         originalRequest.url(), elementType, elementName
                     });
-                    requestResponseMap.put(rowIndex, new RequestResponsePair(modifiedRequest, modifiedResponse));
+                    requestResponseMap.put(rowIndex, HttpRequestResponse.httpRequestResponse(modifiedRequest, modifiedResponse));
                 });
             }
             return hasImpact;
@@ -600,7 +511,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
                 tableModel.addRow(new Object[]{
                     originalRequest.url(), elementType, elementName
                 });
-                requestResponseMap.put(tableModel.getRowCount() - 1, new RequestResponsePair(modifiedRequest, null));
+                requestResponseMap.put(tableModel.getRowCount() - 1, HttpRequestResponse.httpRequestResponse(modifiedRequest, null));
             });
             return false;
         } finally {
@@ -646,47 +557,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider {
         return minimizedRequest;
     }
 
-    private void displayResponseWithHighlights(HttpResponse modifiedResponse) {
-        detailResponseArea.setText("");
-        if (modifiedResponse == null || baselineResponses.isEmpty()) {
-            detailResponseArea.setText(modifiedResponse == null ? "No response available" : modifiedResponse.toString());
-            return;
-        }
 
-        String[] originalLines = normalizeResponse(baselineResponses.get(0).toString()).split("\n");
-        String[] modifiedLines = normalizeResponse(modifiedResponse.toString()).split("\n");
-        StyledDocument doc = detailResponseArea.getStyledDocument();
-        Style defaultStyle = doc.addStyle("default", null);
-        StyleConstants.setFontFamily(defaultStyle, "Monospaced");
-        StyleConstants.setFontSize(defaultStyle, 12);
-        StyleConstants.setForeground(defaultStyle, foregroundColor);
-
-        Style highlightStyle = doc.addStyle("highlight", defaultStyle);
-        StyleConstants.setBackground(highlightStyle, buttonColor);
-
-        Style dynamicStyle = doc.addStyle("dynamic", defaultStyle);
-        StyleConstants.setBackground(dynamicStyle, new Color(128, 0, 64)); // Dark magenta for dynamic content
-
-        try {
-            int maxLines = Math.max(originalLines.length, modifiedLines.length);
-            for (int i = 0; i < maxLines; i++) {
-                String originalLine = i < originalLines.length ? originalLines[i] : "";
-                String modifiedLine = i < modifiedLines.length ? modifiedLines[i] : "";
-                String lineToDisplay = modifiedLine + "\n";
-                if (lineToDisplay.contains("<__DYNAMIC_CONTENTS__>")) {
-                    doc.insertString(doc.getLength(), lineToDisplay, dynamicStyle);
-                } else if (!originalLine.equals(modifiedLine)) {
-                    doc.insertString(doc.getLength(), lineToDisplay, highlightStyle);
-                } else {
-                    doc.insertString(doc.getLength(), lineToDisplay, defaultStyle);
-                }
-            }
-            detailResponseArea.setCaretPosition(0);
-        } catch (BadLocationException e) {
-            api.logging().logToError("Error displaying response: " + e.getMessage());
-            detailResponseArea.setText("Error displaying response: " + e.getMessage());
-        }
-    }
 
     private void updateProgress(int remaining, int total) {
         SwingUtilities.invokeLater(() -> {
