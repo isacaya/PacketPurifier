@@ -12,7 +12,6 @@ Analysis results are displayed in the Results panel, and a streamlined request c
 
 ## Features
 
-- **Highlighting the Differences**: Highlight the lines where differences occur in the response. (Normalized parts during baseline establishment are highlighted in dark magenta, and the parts influenced by influential elements are shown in light blue.)
 - **Element Filtering**: It can choose which elements(Parameters, Cookies, Headers) to include in the analysis.
 - **Adjustable Number of Baselines**: The number of baselines can be adjusted to improve accuracy. (2 to 10)
 - **Various Baseline Establishment Criteria**: Removes values that change with every request regardless of user input (e.g., timestamps, CSRF tokens) while establishing the baseline. Two normalization methods are used to detect such changing values:
