@@ -97,7 +97,6 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, 
     public void extensionUnloaded() {
         if (executor != null && !executor.isShutdown()) {
             executor.shutdown();
-            api.logging().logToOutput("PacketPurifier executor shutdown complete.");
         }
     }
 
@@ -260,16 +259,9 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, 
                 return;
             }
             
-            // Log request details for debugging
-            api.logging().logToOutput("Request loaded successfully: " + modifiedRequest.url());
-            api.logging().logToOutput("Request method: " + modifiedRequest.method());
-            api.logging().logToOutput("Request service: " + modifiedRequest.httpService());
-            
             clearResults(); // Clear results before analyzing
             analyzeRequest(modifiedRequest);
         } catch (Exception e) {
-            api.logging().logToError("Error parsing edited request: " + e.getMessage());
-            e.printStackTrace();
             SwingUtilities.invokeLater(() -> {
                 notificationLabel.setText("Error: " + e.getMessage());
                 new Timer(3000, e1 -> notificationLabel.setText("")).start();
@@ -307,14 +299,11 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, 
 
     private void loadRequest(HttpRequest request) {
         currentRequest = request;
-        api.logging().logToOutput("Loading request: " + request.url());
         SwingUtilities.invokeLater(() -> {
             try {
                 requestEditor.setRequest(request);
-                api.logging().logToOutput("Request set in editor successfully");
             } catch (Exception e) {
                 api.logging().logToError("Error setting request in editor: " + e.getMessage());
-                e.printStackTrace();
             }
             tableModel.setRowCount(0);
             progressBar.setValue(0);
@@ -398,34 +387,6 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, 
                     }
                 }
 
-                // Log normalized lines for the first baseline response
-                String[] normalizedLines = baselineResponses.get(0).toString().split("\n");
-                if (accurateMethod.isSelected()) {
-                    for (Map.Entry<Integer, PrefixPostfixPair> entry : dynamicLinePrefixesPostfixes.entrySet()) {
-                        int lineIndex = entry.getKey();
-                        PrefixPostfixPair pair = entry.getValue();
-                        if (lineIndex < normalizedLines.length) {
-                            String originalLine = normalizedLines[lineIndex];
-                            String normalizedLine = normalizeLine(originalLine, pair);
-                            api.logging().logToOutput(String.format(
-                                "Dynamic Line %d: Original='%s', Prefix='%s', Postfix='%s', Normalized='%s'",
-                                lineIndex + 1, originalLine, pair.prefix, pair.postfix, normalizedLine
-                            ));
-                        }
-                    }
-                } else {
-                    for (Integer lineIndex : dynamicLines) {
-                        if (lineIndex < normalizedLines.length) {
-                            String originalLine = normalizedLines[lineIndex];
-                            String normalizedLine = "<__DYNAMIC_CONTENTS__>";
-                            api.logging().logToOutput(String.format(
-                                "Dynamic Line %d: Original='%s', Normalized='%s'",
-                                lineIndex + 1, originalLine, normalizedLine
-                            ));
-                        }
-                    }
-                }
-
                 if (filter.equals("All") || filter.equals("Parameters")) {
                     for (HttpParameter param : originalRequest.parameters()) {
                         if (param.type() != HttpParameterType.COOKIE) {
@@ -474,7 +435,6 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, 
                     clearButton.setEnabled(true);
                 });
             } catch (Exception e) {
-                api.logging().logToError("Error analyzing request: " + e.getMessage());
                 final int finalTotalTasks = tasksRemaining.get();
                 SwingUtilities.invokeLater(() -> {
                     tableModel.addRow(new Object[]{
@@ -506,7 +466,6 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, 
             }
             return hasImpact;
         } catch (Exception e) {
-            api.logging().logToError(String.format("Error testing %s '%s': %s", elementType, elementName, e.getMessage()));
             SwingUtilities.invokeLater(() -> {
                 tableModel.addRow(new Object[]{
                     originalRequest.url(), elementType, elementName
