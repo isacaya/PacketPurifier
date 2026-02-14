@@ -38,6 +38,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, 
     private JComboBox<String> filterComboBox;
     private JRadioButton basicMethod;
     private JRadioButton accurateMethod;
+    private JCheckBox ignoreDateHeaderCheckbox;
     private JSpinner baselineSpinner;
     private HttpRequestEditor requestEditor;
     private HttpRequest currentRequest;
@@ -118,6 +119,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, 
         JLabel normalizationLabel = new JLabel("Normalization:");
         basicMethod = new JRadioButton("Basic", true);
         accurateMethod = new JRadioButton("Accurate", false);
+        ignoreDateHeaderCheckbox = new JCheckBox("Ignore Date header in comparison", true);
         ButtonGroup normalizationGroup = new ButtonGroup();
         normalizationGroup.add(basicMethod);
         normalizationGroup.add(accurateMethod);
@@ -154,6 +156,7 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, 
         toolbar.add(normalizationLabel);
         toolbar.add(basicMethod);
         toolbar.add(accurateMethod);
+        toolbar.add(ignoreDateHeaderCheckbox);
         toolbar.add(Box.createHorizontalStrut(10));
         toolbar.add(baselineLabel);
         toolbar.add(baselineSpinner);
@@ -531,9 +534,42 @@ public class PacketPurifier implements BurpExtension, ContextMenuItemsProvider, 
             return true;
         }
 
-        String normalizedOriginal = normalizeResponse(original.toString());
-        String normalizedModified = normalizeResponse(modified.toString());
+        String normalizedOriginal = preprocessForComparison(original);
+        String normalizedModified = preprocessForComparison(modified);
         return !normalizedOriginal.equals(normalizedModified);
+    }
+
+    private String preprocessForComparison(HttpResponse response) {
+        String normalizedResponse = normalizeResponse(response.toString());
+        if (ignoreDateHeaderCheckbox != null && ignoreDateHeaderCheckbox.isSelected()) {
+            return removeDateHeaderLine(normalizedResponse);
+        }
+        return normalizedResponse;
+    }
+
+    private String removeDateHeaderLine(String responseStr) {
+        String[] lines = responseStr.split("\n", -1);
+        StringBuilder normalized = new StringBuilder();
+        boolean inHeaders = true;
+
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            boolean isHeaderTerminator = line.isEmpty() || line.equals("\r");
+            boolean isDateHeader = inHeaders && line.regionMatches(true, 0, "Date:", 0, 5);
+
+            if (!isDateHeader) {
+                normalized.append(line);
+                if (i < lines.length - 1) {
+                    normalized.append("\n");
+                }
+            }
+
+            if (inHeaders && isHeaderTerminator) {
+                inHeaders = false;
+            }
+        }
+
+        return normalized.toString();
     }
 
     private String normalizeLine(String line, PrefixPostfixPair pair) {
